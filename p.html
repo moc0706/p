@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D モンスターバトル</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; font-family: 'Helvetica Neue', Arial, sans-serif; background: #87CEEB; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; z-index: 1; }
+        
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; padding: 15px; box-sizing: border-box; }
+        .monster-status { background: rgba(255, 255, 255, 0.93); border: 3px solid #333; border-radius: 10px; padding: 10px; width: 230px; pointer-events: auto; box-shadow: 0 4px 0 rgba(0,0,0,0.2); }
+        #enemy-status { align-self: flex-end; }
+        #player-status { align-self: flex-start; }
+        
+        .bar-container { background: #e0e0e0; height: 12px; border-radius: 6px; overflow: hidden; border: 2px solid #333; margin-top: 5px; }
+        .hp-bar { background: #4CAF50; height: 100%; width: 100%; transition: width 0.3s; }
+        .type-badge { display: inline-block; padding: 2px 6px; font-size: 10px; color: #fff; border-radius: 4px; font-weight: bold; margin-left: 5px; }
+        
+        #bottom-area { align-self: center; width: 100%; max-width: 600px; display: flex; flex-direction: column; gap: 6px; pointer-events: auto; }
+        #log { height: 75px; background: rgba(0, 0, 0, 0.85); color: #fff; border: 3px solid #333; border-radius: 8px; padding: 10px; overflow-y: auto; font-size: 13px; line-height: 1.5; }
+        
+        #skill-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .party-controls { display: flex; gap: 6px; background: rgba(255,255,255,0.8); padding: 6px; border-radius: 6px; border: 2px solid #333; justify-content: center; overflow-x: auto; }
+        
+        button { padding: 12px 10px; font-weight: bold; font-size: 12px; background: #fff; border: 2px solid #333; border-radius: 6px; cursor: pointer; box-shadow: 0 2px 0 #333; }
+        button:active { transform: translateY(2px); box-shadow: none; }
+        button:disabled { background: #e0e0e0 !important; color: #888 !important; cursor: not-allowed; box-shadow: none; transform: none; }
+        .btn-party { background: #e3f2fd; white-space: nowrap; }
+        
+        .forget-mode { background: #ffcdd2 !important; border: 2px solid #d32f2f !important; color: #b71c1c !important; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+<div id="ui-layer">
+    <div id="enemy-status" class="monster-status">
+        <div><strong><span id="enemy-name">ネコロン</span></strong><span id="enemy-type" class="type-badge"></span> <span style="font-size:11px;float:right;">Lv.<span id="enemy-lv">5</span></span></div>
+        <div class="bar-container"><div id="enemy-hp" class="hp-bar"></div></div>
+        <div style="text-align: right; font-size: 11px;"><span id="enemy-hp-text">50</span>/<span id="enemy-max-hp-text">50</span></div>
+        <div id="enemy-buffs" style="font-size:10px; color:#666;"></div>
+    </div>
+
+    <div id="player-status" class="monster-status">
+        <div><strong><span id="player-name">イヌまる</span></strong><span id="player-type" class="type-badge"></span> <span style="font-size:11px;float:right;">Lv.<span id="player-lv">5</span></span></div>
+        <div class="bar-container"><div id="player-hp" class="hp-bar"></div></div>
+        <div style="text-align: right; font-size: 11px;"><span id="player-hp-text">60</span>/<span id="player-max-hp-text">60</span></div>
+        <div id="player-buffs" style="font-size:10px; color:#666;"></div>
+    </div>
+
+    <div id="bottom-area">
+        <div id="log">バトルフィールドへ ようこそ！</div>
+        
+        <div id="party-label" style="font-size: 11px; font-weight: bold; color: #333;">【手持ち交代】</div>
+        <div id="party-list" class="party-controls"></div>
+
+        <div id="skill-label" style="font-size: 11px; font-weight: bold; color: #333;">【わざ（攻撃・補助）】</div>
+        <div id="skill-list"></div>
+
+        <div id="item-controls" style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+            <button id="btn-heal" onclick="heal()">キズぐすりを使う (HP30回復)</button>
+            <button id="btn-catch" onclick="catchMonster()" style="background:#fff59d;">モンスターボールを投げる</button>
+        </div>
+        
+        <button id="btn-revive" onclick="reviveAll()" style="display:none; background:#ff5252; color:white; font-size:15px; padding:12px; border:3px solid #333;">⚠️ 目の前が真っ暗になった！回復して再戦</button>
+    </div>
+</div>
+
+<script>
+    const TYPE_COLORS = { "ノーマル": "#90a4ae", "ほのお": "#ff7043", "みず": "#29b6f6", "くさ": "#66bb6a" };
+    const TYPE_CHART = {
+        "ほのお": { "くさ": 2.0, "みず": 0.5, "ほのお": 0.5, "ノーマル": 1.0 },
+        "みず":   { "ほのお": 2.0, "くさ": 0.5, "みず": 0.5, "ノーマル": 1.0 },
+        "くさ":   { "みず": 2.0, "ほのお": 0.5, "くさ": 0.5, "ノーマル": 1.0 },
+        "ノーマル": { "ほのお": 1.0, "みず": 1.0, "くさ": 1.0, "ノーマル": 1.0 }
+    };
+
+    const MOVE_DATA = {
+        "たいあたり":     { name: "たいあたり", type: "ノーマル", cat: "物理", power: 12, acc: 0.95, col: 0xffffff },
+        "つるぎのまい":   { name: "つるぎのまい", type: "ノーマル", cat: "補助", effect: "atk_up", col: 0xffeb3b },
+        "にらみつける":   { name: "にらみつける", type: "ノーマル", cat: "補助", effect: "def_down", col: 0xe0e0e0 },
+        "はかいこうせん": { name: "はかいこうせん", type: "ノーマル", cat: "特殊", power: 40, acc: 0.7, col: 0xf5f5f5 },
+        "ひのこ":         { name: "ひのこ", type: "ほのお", cat: "特殊", power: 15, acc: 0.9, col: 0xff5722 },
+        "火炎放射":       { name: "火炎放射", type: "ほのお", cat: "特殊", power: 28, acc: 0.85, col: 0xf44336 },
+        "みずでっぽう":   { name: "みずでっぽう", type: "みず", cat: "特殊", power: 15, acc: 0.9, col: 0x2196f3 },
+        "アクアテール":   { name: "アクアテール", type: "みず", cat: "物理", power: 26, acc: 0.85, col: 0x00bcd4 },
+        "つるのむち":     { name: "つるのむち", type: "くさ", cat: "物理", power: 15, acc: 0.9, col: 0x4caf50 },
+        "ソーラービーム": { name: "ソーラービーム", type: "くさ", cat: "特殊", power: 35, acc: 0.75, col: 0x8bc34a },
+        "ギガドレイン":   { name: "ギガドレイン", type: "くさ", cat: "特殊", power: 18, acc: 0.9, effect: "drain", col: 0xccff90 }
+    };
+
+    let party = [
+        { 
+            name: "イヌまる", type: "ほのお", hp: 60, maxHp: 60, lv: 5, color: 0xffa500, shape: "box",
+            atk: 15, def: 10, spatk: 12, buffAtk: 1, buffDef: 1,
+            moves: ["たいあたり", "つるぎのまい", "ひのこ"],
+            evoLv: 7, evoName: "ガルル王", evoColor: 0xd32f2f, evoShape: "sphere"
+        },
+        {
+            name: "ペンペン", type: "みず", hp: 55, maxHp: 55, lv: 5, color: 0x26c6da, shape: "sphere",
+            atk: 10, def: 14, spatk: 16, buffAtk: 1, buffDef: 1,
+            moves: ["みずでっぽう", "にらみつける"],
+            evoLv: 8, evoName: "カイザー海皇", evoColor: 0x0d47a1, evoShape: "box"
+        }
+    ];
+    let currentActiveIndex = 0;
+
+    let enemy = { 
+        name: "ネコロン", type: "くさ", hp: 50, maxHp: 50, lv: 5, color: 0x66bb6a, shape: "sphere", 
+        atk: 12, def: 11, spatk: 11, buffAtk: 1, buffDef: 1,
+        moves: ["たいあたり", "つるのむち", "ギガドレイン"]
+    };
+    
+    let isTransitioning = false;
+    let enemyCount = 1;
+
+    // 技忘れシステム用ステート
+    let learningState = { active: false, pokemon: null, newMoveKey: null };
+
+    // --- 3D描画 ---
+    const scene = new THREE.Scene(); scene.background = new THREE.Color(0xb3e5fc);
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(-2.5, 2.5, 6); camera.lookAt(0, 0.8, 0);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5); dirLight.position.set(5, 10, 5); scene.add(dirLight);
+    const stage = new THREE.Mesh(new THREE.CylinderGeometry(3.5, 3.7, 0.1, 32), new THREE.MeshLambertMaterial({ color: 0x9ccc65 }));
+    stage.position.y = -0.05; scene.add(stage);
+
+    const playerGroup = new THREE.Group(); playerGroup.position.set(-1.2, 0, 1.5); scene.add(playerGroup);
+    const enemyGroup = new THREE.Group(); enemyGroup.position.set(1.2, 0, -1.5); scene.add(enemyGroup);
+
+    function rebuild3DModel(group, data) {
+        while(group.children.length > 0){ group.remove(group.children[0]); }
+        const mat = new THREE.MeshStandardMaterial({ color: data.color });
+        if(data.shape === "box") {
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), mat); body.position.y = 0.35;
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), mat); head.position.set(0, 0.8, -0.1);
+            group.add(body, head);
+        } else {
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 16), mat); body.position.y = 0.45;
+            const horn = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 4), mat); horn.position.set(0, 0.9, 0);
+            group.add(body, horn);
+        }
+    }
+
+    rebuild3DModel(playerGroup, party[currentActiveIndex]);
+    rebuild3DModel(enemyGroup, enemy);
+
+    let particle = null;
+    const logDiv = document.getElementById('log');
+    function addLog(text) { logDiv.innerHTML += `<br>${text}`; logDiv.scrollTop = logDiv.scrollHeight; }
+
+    // --- UI更新ロジック ---
+    function updateUI() {
+        let p = party[currentActiveIndex];
+        
+        document.getElementById('player-hp').style.width = (p.hp / p.maxHp) * 100 + '%';
+        document.getElementById('enemy-hp').style.width = (enemy.hp / enemy.maxHp) * 100 + '%';
+        
+        document.getElementById('player-name').innerText = p.name;
+        document.getElementById('player-lv').innerText = p.lv;
+        document.getElementById('player-hp-text').innerText = p.hp;
+        document.getElementById('player-max-hp-text').innerText = p.maxHp;
+        document.getElementById('player-type').innerText = p.type;
+        document.getElementById('player-type').style.backgroundColor = TYPE_COLORS[p.type];
+        document.getElementById('player-buffs').innerText = `攻撃:${p.buffAtk}倍 / 防御:${p.buffDef}倍`;
+
+        document.getElementById('enemy-name').innerText = enemy.name;
+        document.getElementById('enemy-lv').innerText = enemy.lv;
+        document.getElementById('enemy-hp-text').innerText = enemy.hp;
+        document.getElementById('enemy-max-hp-text').innerText = enemy.maxHp;
+        document.getElementById('enemy-type').innerText = enemy.type;
+        document.getElementById('enemy-type').style.backgroundColor = TYPE_COLORS[enemy.type];
+        document.getElementById('enemy-buffs').innerText = `攻撃:${enemy.buffAtk}倍 / 防御:${enemy.buffDef}倍`;
+
+        let isAllFainted = party.every(m => m.hp <= 0);
+
+        if (isAllFainted) {
+            document.getElementById('party-label').style.display = 'none';
+            document.getElementById('party-list').style.display = 'none';
+            document.getElementById('skill-label').style.display = 'none';
+            document.getElementById('skill-list').style.display = 'none';
+            document.getElementById('item-controls').style.display = 'none';
+            document.getElementById('btn-revive').style.display = 'block';
+            return;
+        } else {
+            document.getElementById('party-label').style.display = 'block';
+            document.getElementById('party-list').style.display = 'flex';
+            document.getElementById('skill-label').style.display = 'block';
+            document.getElementById('skill-list').style.display = 'grid';
+            document.getElementById('item-controls').style.display = 'grid';
+            document.getElementById('btn-revive').style.display = 'none';
+        }
+
+        const skillListDiv = document.getElementById('skill-list');
+        skillListDiv.innerHTML = "";
+
+        // 🛠️【バグ修正】技忘れステートの際、確実にボタンが生成されて最前面に出るよう調整
+        if (learningState.active) {
+            document.getElementById('skill-label').innerText = `【選択】忘れるわざを選んでください（新わざ: ${MOVE_DATA[learningState.newMoveKey].name}）`;
+            
+            learningState.pokemon.moves.forEach((moveKey, index) => {
+                const move = MOVE_DATA[moveKey];
+                let btn = document.createElement('button');
+                btn.className = "forget-mode";
+                btn.innerText = `【忘れる】 ${move.name}`;
+                btn.onclick = () => replaceMove(index);
+                skillListDiv.appendChild(btn);
+            });
+
+            let cancelBtn = document.createElement('button');
+            cancelBtn.innerText = `❌ 新しいわざをあきらめる`;
+            cancelBtn.style.gridColumn = "span 2";
+            cancelBtn.style.background = "#eee";
+            cancelBtn.onclick = () => cancelLearning();
+            skillListDiv.appendChild(cancelBtn);
+
+            // 他の操作を完全にロック
+            document.getElementById('btn-heal').disabled = true;
+            document.getElementById('btn-catch').disabled = true;
+        } else {
+            document.getElementById('skill-label').innerText = "【わざ（攻撃・補助）】";
+            p.moves.forEach(moveKey => {
+                const move = MOVE_DATA[moveKey];
+                let btn = document.createElement('button');
+                btn.style.borderLeft = `6px solid ${TYPE_COLORS[move.type]}`;
+                btn.innerText = `${move.name} [${move.cat}]`;
+                btn.disabled = isTransitioning || p.hp <= 0;
+                btn.onclick = () => useMove(move, true);
+                skillListDiv.appendChild(btn);
+            });
+
+            document.getElementById('btn-heal').disabled = isTransitioning;
+            document.getElementById('btn-catch').disabled = isTransitioning;
+        }
+
+        const partyListDiv = document.getElementById('party-list');
+        partyListDiv.innerHTML = "";
+        party.forEach((m, idx) => {
+            let btn = document.createElement('button');
+            btn.className = "btn-party";
+            btn.innerText = `${m.name} (Lv.${m.lv})`;
+            btn.disabled = isTransitioning || idx === currentActiveIndex || m.hp <= 0 || learningState.active;
+            if(m.hp <= 0) { btn.style.background = "#ccc"; btn.innerText += " (ひんし)"; }
+            btn.onclick = () => {
+                isTransitioning = true;
+                addLog(`戻れ！ ${p.name}！ いけっ！ ${m.name}！`);
+                currentActiveIndex = idx;
+                rebuild3DModel(playerGroup, party[currentActiveIndex]);
+                updateUI();
+                setTimeout(enemyTurn, 1200);
+            };
+            partyListDiv.appendChild(btn);
+        });
+    }
+
+    function createHitEffect(pos, col) {
+        try {
+            if(particle) scene.remove(particle);
+            particle = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), new THREE.MeshBasicMaterial({color: col, wireframe: true}));
+            particle.position.copy(pos).y += 0.4; scene.add(particle);
+            setTimeout(() => { if(particle){ scene.remove(particle); particle = null; } }, 300);
+        } catch(e){}
+    }
+
+    // --- バトルコアロジック ---
+    function useMove(move, isPlayerTurn) {
+        if (isTransitioning || learningState.active) return;
+        isTransitioning = true;
+        updateUI();
+
+        let attacker = isPlayerTurn ? party[currentActiveIndex] : enemy;
+        let defender = isPlayerTurn ? enemy : party[currentActiveIndex];
+        let attGroup = isPlayerTurn ? playerGroup : enemyGroup;
+        let defGroup = isPlayerTurn ? enemyGroup : playerGroup;
+
+        attGroup.position.z += isPlayerTurn ? -0.6 : 0.6;
+        
+        setTimeout(() => {
+            attGroup.position.set(isPlayerTurn ? -1.2 : 1.2, 0, isPlayerTurn ? 1.5 : -1.5);
+            
+            if (Math.random() > move.acc) {
+                addLog(`❌ ${attacker.name}の ${move.name} ははずれた！`);
+            } else if (move.cat === "補助") {
+                if (move.effect === "atk_up") {
+                    attacker.buffAtk += 0.5;
+                    addLog(`✨ ${attacker.name}は 【${move.name}】 で攻撃力を高めた！`);
+                } else if (move.effect === "def_down") {
+                    defender.buffDef = Math.max(0.5, defender.buffDef - 0.3);
+                    addLog(`📉 ${attacker.name}の 【${move.name}】！ ${defender.name}の防御力が下がった！`);
+                }
+                createHitEffect(attGroup.position, move.col);
+            } else {
+                let baseStat = (move.cat === "物理") ? attacker.atk : attacker.spatk;
+                let buffMultiplier = (move.cat === "物理") ? attacker.buffAtk : 1.0;
+                let defMultiplier = defender.buffDef;
+
+                let damage = Math.floor((move.power + (baseStat * 0.5)) * buffMultiplier / defMultiplier);
+                let compatibility = TYPE_CHART[move.type][defender.type] || 1.0;
+                damage = Math.floor(damage * compatibility);
+
+                defender.hp = Math.max(0, defender.hp - damage);
+                addLog(`⚔️ ${attacker.name}の ${move.name}！ ${defender.name}に ${damage} ダメージ！`);
+                
+                if (compatibility > 1.1) addLog("🔥 効果は ばつぐんだ！");
+                if (compatibility < 0.9) addLog("🍃 効果は いまひとつの ようだ……");
+
+                if (move.effect === "drain") {
+                    let healAmount = Math.floor(damage * 0.5);
+                    attacker.hp = Math.min(attacker.maxHp, attacker.hp + healAmount);
+                    addLog(`🍃 吸収！ ${attacker.name}はHPを ${healAmount} 回復した！`);
+                }
+                createHitEffect(defGroup.position, move.col);
+            }
+
+            if (defender.hp <= 0) {
+                if (isPlayerTurn) {
+                    winBattle();
+                } else {
+                    addLog(`💀 ${defender.name} はたおれた！`);
+                    isTransitioning = false;
+                    updateUI();
+                }
+            } else {
+                if (isPlayerTurn) {
+                    setTimeout(enemyTurn, 1000);
+                } else {
+                    isTransitioning = false;
+                    updateUI();
+                }
+            }
+        }, 150);
+    }
+
+    function enemyTurn() {
+        if (enemy.hp <= 0 || party[currentActiveIndex].hp <= 0) {
+            isTransitioning = false;
+            updateUI();
+            return;
+        }
+        let randomMoveKey = enemy.moves[Math.floor(Math.random() * enemy.moves.length)];
+        isTransitioning = false;
+        useMove(MOVE_DATA[randomMoveKey], false);
+    }
+
+    function heal() {
+        if (isTransitioning || learningState.active) return;
+        let p = party[currentActiveIndex];
+        if (p.hp <= 0) return;
+        
+        isTransitioning = true;
+        p.hp = Math.min(p.maxHp, p.hp + 30);
+        addLog(`💊 キズぐすり！ ${p.name}の HPが 30 回復した！`);
+        createHitEffect(playerGroup.position, 0x00ff00);
+        updateUI();
+        setTimeout(enemyTurn, 1000);
+    }
+
+    function catchMonster() {
+        if (isTransitioning || enemy.hp <= 0 || learningState.active) return;
+        isTransitioning = true;
+        addLog(`🔴 ボールを投げた！`);
+        setTimeout(() => {
+            if (Math.random() > (enemy.hp / enemy.maxHp)) {
+                addLog(`✨ やった！ 野生の ${enemy.name} をつかまえた！`);
+                if(party.length < 6) {
+                    party.push({
+                        name: "味方の" + enemy.name, type: enemy.type, hp: enemy.maxHp, maxHp: enemy.maxHp, lv: enemy.lv, color: enemy.color, shape: enemy.shape,
+                        atk: enemy.atk, def: enemy.def, spatk: enemy.spatk, buffAtk: 1, buffDef: 1,
+                        moves: [...enemy.moves], evoLv: 8, evoName: "ドダイトス風", evoColor: 0x1b5e20, evoShape: "box"
+                    });
+                    addLog(`💼 手持ちに加わった！`);
+                }
+                winBattle();
+            } else {
+                addLog(`💨 ああっ！ぬけだされた！`);
+                setTimeout(enemyTurn, 1000);
+            }
+        }, 800);
+    }
+
+    // 🛠️ 技覚えチェック関数（強制的にUIを書き換えるトリガーを追加）
+    function checkAndLearnMove(pokemon, moveKey) {
+        if (pokemon.moves.includes(moveKey)) return;
+
+        if (pokemon.moves.length < 4) {
+            pokemon.moves.push(moveKey);
+            addLog(`✨ ${pokemon.name} は 新しいわざ 【${MOVE_DATA[moveKey].name}】 を覚えた！`);
+        } else {
+            addLog(`🚨 ${pokemon.name} は 【${MOVE_DATA[moveKey].name}】 を覚えたい！`);
+            addLog(`しかし、わざを4つ覚えているので、どれか1つを忘れる必要があります。`);
+            learningState.active = true;
+            learningState.pokemon = pokemon;
+            learningState.newMoveKey = moveKey;
+            // ログを出した直後に確実に技忘れ選択肢を描画
+            setTimeout(updateUI, 50); 
+        }
+    }
+
+    function replaceMove(index) {
+        let oldMoveName = MOVE_DATA[learningState.pokemon.moves[index]].name;
+        let newMoveName = MOVE_DATA[learningState.newMoveKey].name;
+        
+        learningState.pokemon.moves[index] = learningState.newMoveKey;
+        addLog(`🍃 1、2の……ポカン！ ${learningState.pokemon.name}は 【${oldMoveName}】 を忘れた！`);
+        addLog(`✨ そして、新しく 【${newMoveName}】 をおぼえた！`);
+        
+        learningState.active = false;
+        learningState.pokemon = null;
+        learningState.newMoveKey = null;
+        updateUI();
+    }
+
+    function cancelLearning() {
+        let newMoveName = MOVE_DATA[learningState.newMoveKey].name;
+        addLog(`❌ ${learningState.pokemon.name}は 【${newMoveName}】 を覚えるのをあきらめた。`);
+        
+        learningState.active = false;
+        learningState.pokemon = null;
+        learningState.newMoveKey = null;
+        updateUI();
+    }
+
+    function reviveAll() {
+        addLog("🏥 ポケモンセンター！ モンスターが元気に回復した！");
+        party.forEach(m => { m.hp = m.maxHp; m.buffAtk = 1; m.buffDef = 1; });
+        enemy.hp = enemy.maxHp; enemy.buffAtk = 1; enemy.buffDef = 1;
+        isTransitioning = false;
+        updateUI();
+    }
+
+    function winBattle() {
+        enemyGroup.position.y = -2;
+        let p = party[currentActiveIndex];
+        p.lv++; p.maxHp += 6; p.hp = Math.min(p.maxHp, p.hp + 15);
+        p.atk += 2; p.spatk += 2;
+        
+        party.forEach(m => { m.buffAtk = 1; m.buffDef = 1; });
+        enemy.buffAtk = 1; enemy.buffDef = 1;
+
+        addLog(`🎉 野生の ${enemy.name} に勝利！ ${p.name}は Lv.${p.lv} になった！`);
+
+        if (p.lv === 6 && p.type === "ほのお") checkAndLearnMove(p, "火炎放射");
+        if (p.lv === 6 && p.type === "みず") checkAndLearnMove(p, "アクアテール");
+
+        if (p.evoLv && p.lv >= p.evoLv) {
+            addLog(`🚨 おや！？ ${p.name} の ようすが……！`);
+            p.name = p.evoName; p.color = p.evoColor; p.shape = p.evoShape;
+            p.maxHp += 20; p.hp = p.maxHp; p.spatk += 10; p.evoLv = null;
+            rebuild3DModel(playerGroup, p);
+            addLog(`✨ おめでとう！ ${p.name} に 進化した！`);
+            checkAndLearnMove(p, "はかいこうせん");
+        }
+
+        let checkNextEnemySpawn = () => {
+            if (learningState.active) {
+                setTimeout(checkNextEnemySpawn, 300);
+                return;
+            }
+            
+            enemyCount++;
+            const names = ["ヒノコグマ", "ミズタマゴ", "クサモッチ", "ポッポ風"];
+            const types = ["ほのお", "みず", "くさ", "ノーマル"];
+            const colors = [0xff3d00, 0x00b0ff, 0x4caf50, 0x90a4ae];
+            const moveSets = [
+                ["たいあたり", "ひのこ"],
+                ["たいあたり", "みずでっぽう"],
+                ["たいあたり", "つるのむち", "ギガドレイン"],
+                ["たいあたり", "にらみつける"]
+            ];
+            let rIndex = enemyCount % names.length;
+            
+            enemy.name = names[rIndex]; enemy.type = types[rIndex]; enemy.color = colors[rIndex];
+            enemy.shape = (Math.random() > 0.5) ? "box" : "sphere";
+            enemy.lv = p.lv + Math.floor(Math.random() * 2) - 1;
+            if(enemy.lv < 1) enemy.lv = 1;
+            enemy.maxHp = 45 + (enemy.lv * 5); enemy.hp = enemy.maxHp;
+            enemy.atk = 10 + enemy.lv; enemy.spatk = 10 + enemy.lv; enemy.def = 10;
+            enemy.moves = moveSets[rIndex];
+            
+            rebuild3DModel(enemyGroup, enemy);
+            enemyGroup.position.y = 0;
+            addLog(`🎵 野生の ${enemy.name} (Lv.${enemy.lv}) が出現！`);
+            isTransitioning = false;
+            updateUI();
+        };
+
+        setTimeout(checkNextEnemySpawn, 1800);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const time = Date.now() * 0.003;
+        if(enemy.hp > 0) enemyGroup.position.y = Math.max(0, enemyGroup.position.y) + Math.sin(time) * 0.02;
+        playerGroup.position.y = Math.sin(time*0.9) * 0.02;
+        if(particle) { particle.rotation.x += 0.05; particle.rotation.y += 0.05; }
+        renderer.render(scene, camera);
+    }
+    animate();
+    updateUI();
+</script>
+</body>
+</html>
